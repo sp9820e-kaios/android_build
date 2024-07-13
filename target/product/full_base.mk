@@ -20,12 +20,15 @@
 # in inherited configurations.
 
 PRODUCT_PACKAGES := \
-    libfwdlockengine \
-    OpenWnn \
+    drmserver \
+    libdrmframework \
+    libdrmframework_jni \
     libWnnEngDic \
     libWnnJpnDic \
     libwnndict \
     WAPPushManager
+# SPRD:
+# OpenWnn has been removed as features and marketing request
 
 PRODUCT_PACKAGES += \
     Galaxy4 \
@@ -59,3 +62,19 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/locales_full.mk)
 
 # Get everything else from the parent package
 $(call inherit-product, $(SRC_TARGET_DIR)/product/generic_no_telephony.mk)
+
+# add widevine in none gms version
+#PRODUCT_PROPERTY_OVERRIDES += \
+#        drm.service.enabled=true
+
+#PRODUCT_PACKAGES += \
+#        com.google.widevine.software.drm.xml \
+#        com.google.widevine.software.drm \
+#        libdrmwvmplugin \
+#        libwvm \
+#        libWVStreamControlAPI_L$(BOARD_WIDEVINE_OEMCRYPTO_LEVEL) \
+#        libwvdrm_L$(BOARD_WIDEVINE_OEMCRYPTO_LEVEL) \
+#        liboemcrypto \
+#        libdrmdecrypt \
+#        libwvdecryptcommon \
+#        libwvdrmengine

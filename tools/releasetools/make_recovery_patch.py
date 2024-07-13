@@ -34,6 +34,11 @@ def main(argv):
 
   OPTIONS.info_dict = common.LoadInfoDict(input_dir)
 
+  # SPRD: add for secure boot
+  OPTIONS.secure_boot = OPTIONS.info_dict.get("secure_boot", False)
+  OPTIONS.secure_boot_tool = OPTIONS.info_dict.get("secure_boot_tool", None)
+  OPTIONS.single_key = OPTIONS.info_dict.get("single_key", True)
+
   recovery_img = common.GetBootableImage("recovery.img", "recovery.img",
                                          input_dir, "RECOVERY")
   boot_img = common.GetBootableImage("boot.img", "boot.img",

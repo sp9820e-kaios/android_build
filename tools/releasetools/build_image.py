@@ -204,7 +204,7 @@ def MakeVerityEnabledImage(out_file, prop_dict):
   shutil.rmtree(tempdir_name, ignore_errors=True)
   return True
 
-def BuildImage(in_dir, prop_dict, out_file, target_out=None):
+def BuildImage(in_dir, prop_dict, out_file,out_file_2k=None, out_file_4k=None, target_out=None):
   """Build an image to out_file from in_dir with property prop_dict.
 
   Args:
@@ -212,6 +212,8 @@ def BuildImage(in_dir, prop_dict, out_file, target_out=None):
     prop_dict: property dictionary.
     out_file: path of the output image file.
     target_out: path of the product out directory to read device specific FS config files.
+    out_file_2k: path of the output image file ubifs 2k.
+    out_file_4k: path of the output image file ubifs 4k.
 
   Returns:
     True iff the image is built successfully.
@@ -296,6 +298,38 @@ def BuildImage(in_dir, prop_dict, out_file, target_out=None):
   elif fs_type.startswith("f2fs"):
     build_command = ["mkf2fsuserimg.sh"]
     build_command.extend([out_file, prop_dict["partition_size"]])
+  elif fs_type.startswith("ubifs"):
+    build_command = ["mkfs_ubifs"]
+    if "selinux_fc" in prop_dict:
+      build_command.append("-S")
+      build_command.append(prop_dict["selinux_fc"])
+    build_command.append("-a")
+    build_command.append(prop_dict["mount_point"])
+    build_command.append("-r")
+    build_command.append(in_dir)
+    build_command.extend(prop_dict["ubifs_extra_flag"].split())
+    build_command.append("-m 4096")
+    build_command.append("-e 253952")
+    build_command.append("-c")
+    build_command.append(str(int(prop_dict["partition_size"])/int(253952)))
+    build_command.append("-o")
+    build_command.append(out_file_4k)
+
+    build_command_pb = ["mkfs_ubifs"]
+    if "selinux_fc" in prop_dict:
+      build_command_pb.append("-S")
+      build_command_pb.append(prop_dict["selinux_fc"])
+    build_command_pb.append("-a")
+    build_command_pb.append(prop_dict["mount_point"])
+    build_command_pb.append("-r")
+    build_command_pb.append(in_dir)
+    build_command_pb.extend(prop_dict["ubifs_extra_flag"].split())
+    build_command_pb.append("-m 2048")
+    build_command_pb.append("-e 126976")
+    build_command_pb.append("-c")
+    build_command_pb.append(str(int(prop_dict["partition_size"])/int(126976)))
+    build_command_pb.append("-o")
+    build_command_pb.append(out_file_2k)
   else:
     build_command = ["mkyaffs2image", "-f"]
     if prop_dict.get("mkyaffs2_extra_flags", None):
@@ -322,6 +356,9 @@ def BuildImage(in_dir, prop_dict, out_file, target_out=None):
   try:
     if reserved_blocks and fs_type.startswith("ext4"):
       (ext4fs_output, exit_code) = RunCommand(build_command)
+    elif fs_type.startswith("ubifs"):
+      (_, exit_code) = RunCommand(build_command)
+      (_, exit_code) = RunCommand(build_command_pb)
     else:
       (_, exit_code) = RunCommand(build_command)
   finally:
@@ -409,6 +446,7 @@ def ImagePropFromGlobalDict(glob_dict, mount_point):
       d[dest_p] = str(glob_dict[src_p])
 
   common_props = (
+      "ubifs_extra_flag",
       "extfs_sparse_flag",
       "mkyaffs2_extra_flags",
       "selinux_fc",
@@ -427,6 +465,7 @@ def ImagePropFromGlobalDict(glob_dict, mount_point):
     # available.
     copy_prop("system_fs_type", "fs_type")
     copy_prop("system_size", "partition_size")
+    copy_prop("system_ubifs_extra_flag", "ubifs_extra_flag")
     copy_prop("system_journal_size", "journal_size")
     copy_prop("system_verity_block_device", "verity_block_device")
     copy_prop("system_root_image", "system_root_image")
@@ -434,18 +473,38 @@ def ImagePropFromGlobalDict(glob_dict, mount_point):
     copy_prop("has_ext4_reserved_blocks", "has_ext4_reserved_blocks")
     copy_prop("system_squashfs_compressor", "squashfs_compressor")
     copy_prop("system_squashfs_compressor_opt", "squashfs_compressor_opt")
+    copy_prop("system_extfs_sparse_flag", "extfs_sparse_flag")
+    copy_prop("block_list", "block_list")
   elif mount_point == "data":
     # Copy the generic fs type first, override with specific one if available.
     copy_prop("fs_type", "fs_type")
     copy_prop("userdata_fs_type", "fs_type")
     copy_prop("userdata_size", "partition_size")
+    copy_prop("userdata_ubifs_extra_flag", "ubifs_extra_flag")
+    copy_prop("userdata_extfs_sparse_flag", "extfs_sparse_flag")
   elif mount_point == "cache":
     copy_prop("cache_fs_type", "fs_type")
     copy_prop("cache_size", "partition_size")
+    copy_prop("cache_ubifs_extra_flag", "ubifs_extra_flag")
+    copy_prop("cache_extfs_sparse_flag", "extfs_sparse_flag")
+  elif mount_point == "productinfo":
+    copy_prop("prodnv_fs_type", "fs_type")
+    copy_prop("prodnv_size", "partition_size")
+    copy_prop("prodnv_ubifs_extra_flag", "ubifs_extra_flag")
+    copy_prop("prodnv_extfs_sparse_flag", "extfs_sparse_flag")
+  elif mount_point == "usbmsc":
+    copy_prop("usbmsc_fs_type", "fs_type")
+    copy_prop("usbmsc_size", "partition_size")
+    copy_prop("usbmsc_extfs_sparse_flag", "extfs_sparse_flag")
+  elif mount_point == "systeminfo":
+    copy_prop("sysinfo_fs_type", "fs_type")
+    copy_prop("sysinfo_size", "partition_size")
+    copy_prop("sysinfo_extfs_sparse_flag", "extfs_sparse_flag")
   elif mount_point == "vendor":
     copy_prop("vendor_fs_type", "fs_type")
     copy_prop("vendor_size", "partition_size")
     copy_prop("vendor_journal_size", "journal_size")
+    copy_prop("vendor_ubifs_extra_flag", "ubifs_extra_flag")
     copy_prop("vendor_verity_block_device", "verity_block_device")
     copy_prop("has_ext4_reserved_blocks", "has_ext4_reserved_blocks")
   elif mount_point == "oem":
@@ -488,15 +547,34 @@ def main(argv):
     image_properties = glob_dict
   else:
     image_filename = os.path.basename(out_file)
+    file_dirname = os.path.dirname(out_file)
     mount_point = ""
     if image_filename == "system.img":
       mount_point = "system"
+      out_file_2k = os.path.join(file_dirname,'system_b128k_p2k.img')
+      out_file_4k = os.path.join(file_dirname,'system_b256k_p4k.img')
     elif image_filename == "userdata.img":
       mount_point = "data"
+      out_file_2k = os.path.join(file_dirname,'userdata_b128k_p2k.img')
+      out_file_4k = os.path.join(file_dirname,'userdata_b256k_p4k.img')
     elif image_filename == "cache.img":
       mount_point = "cache"
+      out_file_2k = os.path.join(file_dirname,'cache_b128k_p2k.img')
+      out_file_4k = os.path.join(file_dirname,'cache_b256k_p4k.img')
+    elif image_filename == "prodnv.img":
+      mount_point = "productinfo"
+      out_file_2k = os.path.join(file_dirname,'prodnv_b128k_p2k.img')
+      out_file_4k = os.path.join(file_dirname,'prodnv_b256k_p4k.img')
+    elif image_filename == "usbmsc.img":
+      mount_point = "usbmsc"
+      out_file_2k = os.path.join(file_dirname,'usbmsc_b128k_p2k.img')
+      out_file_4k = os.path.join(file_dirname,'usbmsc_b256k_p4k.img')
+    elif image_filename == "sysinfo.img":
+      mount_point = "systeminfo"
     elif image_filename == "vendor.img":
       mount_point = "vendor"
+      out_file_2k = os.path.join(file_dirname,'vendor_b128k_p2k.img')
+      out_file_4k = os.path.join(file_dirname,'vendor_b256k_p4k.img')
     elif image_filename == "oem.img":
       mount_point = "oem"
     else:
@@ -505,7 +583,7 @@ def main(argv):
 
     image_properties = ImagePropFromGlobalDict(glob_dict, mount_point)
 
-  if not BuildImage(in_dir, image_properties, out_file, target_out):
+  if not BuildImage(in_dir, image_properties, out_file, out_file_2k, out_file_4k, target_out):
     print >> sys.stderr, "error: failed to build %s from %s" % (out_file,
                                                                 in_dir)
     exit(1)

@@ -21,6 +21,7 @@
 # core_tiny.mk in addition to core_minimal.mk.
 
 PRODUCT_PACKAGES += \
+    MmsFolderView \
     BasicDreams \
     Browser \
     Calculator \
@@ -32,27 +33,27 @@ PRODUCT_PACKAGES += \
     DeskClock \
     DocumentsUI \
     DownloadProviderUi \
-    Email \
-    Exchange2 \
     ExternalStorageProvider \
     FusedLocation \
     InputDevices \
     KeyChain \
     Keyguard \
-    LatinIME \
-    Launcher2 \
+    Launcher3 \
     ManagedProvisioning \
     PicoTts \
     PacProcessor \
     libpac \
+    SprdAppBackup \
     PrintSpooler \
     ProxyHandler \
-    QuickSearchBox \
     Settings \
     SharedStorageBackup \
     Telecom \
     TeleService \
     VpnDialogs \
-    MmsService
+    MmsService \
+    Stk \
+    SmilPlayer \
+    CommonPhrase
 
 $(call inherit-product, $(SRC_TARGET_DIR)/product/core_base.mk)

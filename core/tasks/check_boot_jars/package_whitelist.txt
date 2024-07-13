@@ -178,8 +178,10 @@ android
 
 
 ###################################################
-# telephony-common.jar
+#telephony-common.jar
 com\.google\..*
+com\.sprd\..*
+com\.thundersoft\..*
 
 
 ###################################################

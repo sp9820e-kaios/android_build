@@ -165,7 +165,12 @@ function setpaths()
         arm)
             # Legacy toolchain configuration used for ARM kernel compilation
             toolchaindir=arm/arm-eabi-$targetgccversion/bin
+            #toolchaindir=arm/arm-eabi-4.8/bin #arm/arm-eabi-$targetgccversion/bin
             if [ -d "$gccprebuiltdir/$toolchaindir" ]; then
+                 export ARM_EABI_TOOLCHAIN="$gccprebuiltdir/$toolchaindir"
+                 ANDROID_KERNEL_TOOLCHAIN_PATH="$ARM_EABI_TOOLCHAIN":
+            else
+                 toolchaindir=arm/arm-eabi-4.8/bin
                  export ARM_EABI_TOOLCHAIN="$gccprebuiltdir/$toolchaindir"
                  ANDROID_KERNEL_TOOLCHAIN_PATH="$ARM_EABI_TOOLCHAIN":
             fi
@@ -429,6 +434,7 @@ function choosevariant()
 
 function choosecombo()
 {
+
     choosetype $1
 
     echo
@@ -486,9 +492,30 @@ function print_lunch_menu()
     echo
 }
 
+is_packing=0
+
+function build_tool_and_sign_images()
+{
+    if [ $is_packing -eq 0 ]; then
+        is_packing=1
+
+        if [ ! -e $(get_build_var HOST_OUT_EXECUTABLES)/packimage.sh ]; then
+	    echo "packimage.sh does not exist, will make it!"
+	    (\cd "$(gettop)/vendor/sprd/proprietories-source/packimage_scripts" && mma)
+	    (\cd "$(gettop)/vendor/sprd/proprietories-source/packimage_source" && mma)
+        fi
+
+        local HOST_OUT_EXE=$(get_build_var HOST_OUT_EXECUTABLES)
+        . $(gettop)/$HOST_OUT_EXE/packimage.sh "$@"
+
+        is_packing=0
+    fi
+}
+
 function lunch()
 {
     local answer
+
 
     if [ "$1" ] ; then
         answer=$1
@@ -1399,30 +1426,7 @@ function godir () {
 # For some reason, installing the JDK doesn't make it show up in the
 # JavaVM.framework/Versions/1.7/ folder.
 function set_java_home() {
-    # Clear the existing JAVA_HOME value if we set it ourselves, so that
-    # we can reset it later, depending on the version of java the build
-    # system needs.
-    #
-    # If we don't do this, the JAVA_HOME value set by the first call to
-    # build/envsetup.sh will persist forever.
-    if [ -n "$ANDROID_SET_JAVA_HOME" ]; then
-      export JAVA_HOME=""
-    fi
-
-    if [ ! "$JAVA_HOME" ]; then
-      case `uname -s` in
-          Darwin)
-              export JAVA_HOME=$(/usr/libexec/java_home -v 1.7)
-              ;;
-          *)
-              export JAVA_HOME=/usr/lib/jvm/java-7-openjdk-amd64
-              ;;
-      esac
-
-      # Keep track of the fact that we set JAVA_HOME ourselves, so that
-      # we can change it on the next envsetup.sh, if required.
-      export ANDROID_SET_JAVA_HOME=true
-    fi
+    export JAVA_HOME="$(gettop)/build/fake-jdk-tools"
 }
 
 # Print colored exit condition
@@ -1477,6 +1481,11 @@ function make()
         printf "(%s seconds)" $secs
     fi
     echo -e " ####${color_reset}"
+    if [ $ret -eq 0 ] ; then
+      if [ ! "$ONE_SHOT_MAKEFILE" ]; then
+        build_tool_and_sign_images "$@"
+      fi
+    fi
     echo
     return $ret
 }

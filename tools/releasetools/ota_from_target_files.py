@@ -83,7 +83,18 @@ Usage:  ota_from_target_files [flags] input_target_files output_ota_package
   -t  (--worker_threads) <int>
       Specifies the number of worker-threads that will be used when
       generating patches for incremental updates (defaults to 3).
+  -H  (--update_higher)
+      From Android verison 4.4 update to 5.0
 
+  -C  (--part_name_change)
+      Partition name are changed between 4.4 and 5.0
+
+  -S  (--part_size_change)
+      Partition size are changed between 4.4 and 5.0
+
+  -R  (--add_recovery_image)
+      Add recovery image to update package for support power off protection
+      when update between 4.4 and 5.0
 """
 
 import sys
@@ -100,6 +111,7 @@ import zipfile
 import common
 import edify_generator
 import sparse_img
+import re
 
 OPTIONS = common.OPTIONS
 OPTIONS.package_key = None
@@ -122,6 +134,14 @@ OPTIONS.updater_binary = None
 OPTIONS.oem_source = None
 OPTIONS.fallback_to_full = True
 OPTIONS.full_radio = False
+# SPRD: add for update from 4.4\5.1 to 6.0
+#OPTIONS.update_higher = False
+OPTIONS.part_size_change = False
+OPTIONS.add_recovery_image = False
+#OPTIONS.part_name_change = False
+# SPRD: add for secure boot
+OPTIONS.secure_boot_tool = None
+OPTIONS.single_key = True
 
 def MostPopularKey(d, default):
   """Given a dict, return the key corresponding to the largest
@@ -215,9 +235,14 @@ class ItemSet(object):
     i = self.ITEMS.get("system/recovery-from-boot.p", None)
     if i:
       i.uid, i.gid, i.mode, i.selabel, i.capabilities = 0, 0, 0o644, None, None
-    i = self.ITEMS.get("system/etc/install-recovery.sh", None)
-    if i:
-      i.uid, i.gid, i.mode, i.selabel, i.capabilities = 0, 0, 0o544, None, None
+    # SPRD: modify permissions for install-recovery.sh @{
+    #i = self.ITEMS.get("system/etc/install-recovery.sh", None)
+    #if i:
+    #  i.uid, i.gid, i.mode, i.selabel, i.capabilities = 0, 0, 0o544, None, None
+
+    i = self.ITEMS.get("system/bin/install-recovery.sh", None)
+    if i: i.uid, i.gid, i.mode, i.selabel, i.capabilities = 0, 0, 0o750, "u:object_r:install_recovery_exec:s0", None
+    # @}
 
 
 class Item(object):
@@ -391,10 +416,10 @@ def CopyPartitionFiles(itemset, input_zip, output_zip=None, substitute=None):
 
 
 def SignOutput(temp_zip_name, output_zip_name):
-  key_passwords = common.GetKeyPasswords([OPTIONS.package_key])
-  pw = key_passwords[OPTIONS.package_key]
+#  key_passwords = common.GetKeyPasswords([OPTIONS.package_key])
+#  pw = key_passwords[OPTIONS.package_key]
 
-  common.SignFile(temp_zip_name, output_zip_name, OPTIONS.package_key, pw,
+  common.SignFile(temp_zip_name, output_zip_name, OPTIONS.package_key, "TCL_1010",
                   whole_file=True)
 
 
@@ -483,12 +508,22 @@ def GetImage(which, tmpdir, info_dict):
 
   return sparse_img.SparseImage(path, mappath, clobbered_blocks)
 
+# SPRD: add for sysinfo partition @{
+def HasSysinfoPartition(target_files_zip):
+  try:
+    target_files_zip.getinfo("META/checksum")
+    return True
+  except KeyError:
+    return False
+# @}
 
 def WriteFullOTAPackage(input_zip, output_zip):
   # TODO: how to determine this?  We don't know what version it will
   # be installed on top of. For now, we expect the API just won't
   # change very often. Similarly for fstab, it might have changed
   # in the target build.
+  sha1_sh_tmp=None
+  sha1_patch_tmp=None
   script = edify_generator.EdifyGenerator(3, OPTIONS.info_dict)
 
   oem_props = OPTIONS.info_dict.get("oem_fingerprint_properties")
@@ -588,7 +623,7 @@ else if get_stage("%(bcb_dev)s") == "3/3" then
   recovery_mount_options = OPTIONS.info_dict.get("recovery_mount_options")
 
   system_items = ItemSet("system", "META/filesystem_config.txt")
-  script.ShowProgress(system_progress, 0)
+  #script.ShowProgress(system_progress, 0)
 
   if block_based:
     # Full OTA is done as an "incremental" against an empty source
@@ -611,21 +646,32 @@ else if get_stage("%(bcb_dev)s") == "3/3" then
 
   boot_img = common.GetBootableImage("boot.img", "boot.img",
                                      OPTIONS.input_tmp, "BOOT")
-
+  #SPRD: add for sysinfo detect @{
+  if HasSysinfoPartition(input_zip):
+    data = input_zip.read("META/checksum")
+  # @ }
   if not block_based:
     def output_sink(fn, data):
       common.ZipWriteStr(output_zip, "recovery/" + fn, data)
       system_items.Get("system/" + fn)
-
-    common.MakeRecoveryPatch(OPTIONS.input_tmp, output_sink,
+    sha1_sh_tmp, sha1_patch_tmp = common.MakeRecoveryPatch(OPTIONS.input_tmp, output_sink,
                              recovery_img, boot_img)
-
+    #SPRD: add for sysinfo detect @{
+    if HasSysinfoPartition(input_zip):
+      data = data + bytes(sha1_sh_tmp) + bytes(sha1_patch_tmp)
+    # @ }
     system_items.GetMetadata(input_zip)
     system_items.Get("system").SetPermissions(script)
-
+  #SPRD: add for sysinfo detect @{
+  if HasSysinfoPartition(input_zip):
+    common.ZipWriteStr(output_zip,"META-INF/com/android/check.bin", data)
+    script.Mount("/systeminfo")
+    script.UnpackPackageFile("META-INF/com/android/check.bin", "/systeminfo/check.bin")
+    script.DeleteFiles(["/systeminfo/check.bin.new"])
+  # @ }
   if HasVendorPartition(input_zip):
     vendor_items = ItemSet("vendor", "META/vendor_filesystem_config.txt")
-    script.ShowProgress(0.1, 0)
+    #script.ShowProgress(0.1, 0)
 
     if block_based:
       vendor_tgt = GetImage("vendor", OPTIONS.input_tmp, OPTIONS.info_dict)
@@ -646,10 +692,10 @@ else if get_stage("%(bcb_dev)s") == "3/3" then
   common.CheckSize(boot_img.data, "boot.img", OPTIONS.info_dict)
   common.ZipWriteStr(output_zip, "boot.img", boot_img.data)
 
-  script.ShowProgress(0.05, 5)
+  script.ShowProgress(0.05, 7)
   script.WriteRawImage("/boot", "boot.img")
 
-  script.ShowProgress(0.2, 10)
+  #script.ShowProgress(0.2, 10)
   device_specific.FullOTA_InstallEnd()
 
   if OPTIONS.extra_script is not None:
@@ -658,9 +704,9 @@ else if get_stage("%(bcb_dev)s") == "3/3" then
   script.UnmountAll()
 
   if OPTIONS.wipe_user_data:
-    script.ShowProgress(0.1, 10)
+    #script.ShowProgress(0.1, 10)
     script.FormatPartition("/data")
-
+  #script.SetProgress(1)
   if OPTIONS.two_step:
     script.AppendExtra("""
 set_stage("%(bcb_dev)s", "");
@@ -760,6 +806,11 @@ def WriteBlockIncrementalOTAPackage(target_zip, source_zip, output_zip):
   metadata["pre-build"] = source_fp
   metadata["post-build"] = target_fp
 
+# SPRD: add for getting product model @{
+  target_pm = GetBuildProp("ro.product.model", OPTIONS.target_info_dict)
+  metadata["product-model"] = target_pm
+# @}
+
   source_boot = common.GetBootableImage(
       "/tmp/boot.img", "boot.img", OPTIONS.source_tmp, "BOOT",
       OPTIONS.source_info_dict)
@@ -807,6 +858,8 @@ def WriteBlockIncrementalOTAPackage(target_zip, source_zip, output_zip):
         open(OPTIONS.oem_source).readlines())
 
   AppendAssertions(script, OPTIONS.target_info_dict, oem_dict)
+  #TCT FEATURE
+  #script.CheckCu(OPTIONS.cu)
   device_specific.IncrementalOTA_Assertions()
 
   # Two-step incremental package strategy (in chronological order,
@@ -881,6 +934,9 @@ else if get_stage("%(bcb_dev)s") != "3/3" then
   if updating_boot:
     boot_type, boot_device = common.GetTypeAndDevice(
         "/boot", OPTIONS.source_info_dict)
+    if boot_type == "EMMC":
+      strinfo = re.compile('soc:ap')
+      boot_device = strinfo.sub('soc.ap',boot_device)
     d = common.Difference(target_boot, source_boot)
     _, _, d = d.ComputePatch()
     if d is None:
@@ -893,6 +949,13 @@ else if get_stage("%(bcb_dev)s") != "3/3" then
           target_boot.size, source_boot.size, len(d))
 
       common.ZipWriteStr(output_zip, "patch/boot.img.p", d)
+
+      # SPRD: add for secure boot @{
+      if (OPTIONS.secure_boot):
+        secure_boot_type = common.GetSecureBootType("/boot", OPTIONS.info_dict)
+        if (secure_boot_type):
+           boot_type = "%s:%s" % (secure_boot_type, boot_type)
+      # @}
 
       script.PatchCheck("%s:%s:%d:%s:%d:%s" %
                         (boot_type, boot_device,
@@ -920,6 +983,13 @@ else
 
   system_diff.WriteScript(script, output_zip,
                           progress=0.8 if vendor_diff else 0.9)
+  #SPRD: add for sysinfo detect {@
+  if HasSysinfoPartition(target_zip):
+    data = target_zip.read("META/checksum")
+    script.Mount("/systeminfo")
+    common.ZipWriteStr(output_zip,"META-INF/com/android/check.bin", data)
+    script.UnpackPackageFile("META-INF/com/android/check.bin", "/systeminfo/check.bin.new")
+  #@}
   if vendor_diff:
     vendor_diff.WriteScript(script, output_zip, progress=0.1)
 
@@ -1103,6 +1173,8 @@ class FileDifference(object):
 
 
 def WriteIncrementalOTAPackage(target_zip, source_zip, output_zip):
+  sha1_sh_tmp_i=None
+  sha1_patch_tmp_i=None
   target_has_recovery_patch = HasRecoveryPatch(target_zip)
   source_has_recovery_patch = HasRecoveryPatch(source_zip)
 
@@ -1171,6 +1243,10 @@ def WriteIncrementalOTAPackage(target_zip, source_zip, output_zip):
 
   metadata["pre-build"] = source_fp
   metadata["post-build"] = target_fp
+# SPRD: add for getting product model @{
+  target_pm = GetBuildProp("ro.product.model", OPTIONS.target_info_dict)
+  metadata["product-model"] = target_pm
+# @}
 
   source_boot = common.GetBootableImage(
       "/tmp/boot.img", "boot.img", OPTIONS.source_tmp, "BOOT",
@@ -1260,6 +1336,16 @@ else if get_stage("%(bcb_dev)s") != "3/3" then
 
     boot_type, boot_device = common.GetTypeAndDevice(
         "/boot", OPTIONS.source_info_dict)
+    if boot_type == "EMMC":
+      strinfo = re.compile('soc:ap')
+      boot_device = strinfo.sub('soc.ap',boot_device)
+
+    # SPRD: add for secure boot @{
+    if (OPTIONS.secure_boot):
+      secure_boot_type = common.GetSecureBootType("/boot", OPTIONS.info_dict)
+      if (secure_boot_type):
+        boot_type = "%s:%s" % (secure_boot_type, boot_type)
+    # @}
 
     script.PatchCheck("%s:%s:%d:%s:%d:%s" %
                       (boot_type, boot_device,
@@ -1335,7 +1421,10 @@ else
   system_items = ItemSet("system", "META/filesystem_config.txt")
   if vendor_diff:
     vendor_items = ItemSet("vendor", "META/vendor_filesystem_config.txt")
-
+  # SPRD: add for sysinfo detection @{
+  if HasSysinfoPartition(target_zip):
+    data = target_zip.read("META/checksum")
+  # @ }
   if updating_recovery:
     # Recovery is generated as a patch using both the boot image
     # (which contains the same linux kernel as recovery) and the file
@@ -1351,13 +1440,19 @@ else
         common.ZipWriteStr(output_zip, "recovery/" + fn, data)
         system_items.Get("system/" + fn)
 
-      common.MakeRecoveryPatch(OPTIONS.target_tmp, output_sink,
+      sha1_sh_tmp_i,sha1_patch_tmp_i = common.MakeRecoveryPatch(OPTIONS.target_tmp, output_sink,
                                target_recovery, target_boot)
       script.DeleteFiles(["/system/recovery-from-boot.p",
-                          "/system/etc/install-recovery.sh"])
+                          "/system/bin/install-recovery.sh"])
     print "recovery image changed; including as patch from boot."
+    # SPRD: add for sysinfo detection @{
+    if HasSysinfoPartition(target_zip):
+      data = data + bytes(sha1_sh_tmp_i) + bytes(sha1_patch_tmp_i)
+    # @ }
   else:
     print "recovery image unchanged; skipping."
+    script.DeleteFiles(["/system/recovery-from-boot.p"])
+    script.DeleteFiles(["/system/bin/install-recovery.sh"])
 
   script.ShowProgress(0.1, 10)
 
@@ -1460,7 +1555,12 @@ else
   # get set the OTA package again to retry.
   script.Print("Patching remaining system files...")
   system_diff.EmitDeferredPatches(script)
-
+  # SPRD: add for sysinfo detection @{
+  if HasSysinfoPartition(target_zip):
+    script.Mount("/systeminfo")
+    common.ZipWriteStr(output_zip,"META-INF/com/android/check.bin", data)
+    script.UnpackPackageFile("META-INF/com/android/check.bin", "/systeminfo/check.bin.new")
+  # @ }
   if OPTIONS.wipe_user_data:
     script.Print("Erasing user data...")
     script.FormatPartition("/data")
@@ -1530,12 +1630,22 @@ def main(argv):
       OPTIONS.updater_binary = a
     elif o in ("--no_fallback_to_full",):
       OPTIONS.fallback_to_full = False
+    # SPRD: add for update from 4.4\5.1 to 6.0 @{
+    elif o in ("-H", "--update_higher"):
+      OPTIONS.update_higher = True
+    elif o in ("-C", "--part_name_change"):
+      OPTIONS.part_name_change = True
+    elif o in ("-S", "--part_size_change"):
+      OPTIONS.part_size_change = True
+    elif o in ("-R", "--add_recovery_image"):
+      OPTIONS.add_recovery_image = True
+    # @}
     else:
       return False
     return True
 
   args = common.ParseOptions(argv, __doc__,
-                             extra_opts="b:k:i:d:wne:t:a:2o:",
+                             extra_opts="b:k:i:d:wne:t:a:2o:HCSR",
                              extra_long_opts=[
                                  "board_config=",
                                  "package_key=",
@@ -1553,6 +1663,10 @@ def main(argv):
                                  "oem_settings=",
                                  "verify",
                                  "no_fallback_to_full",
+                                 "update_higher",
+                                 "part_name_change",
+                                 "part_size_change",
+                                 "add_recovery_image",
                              ], extra_option_handler=option_handler)
 
   if len(args) != 2:
@@ -1597,6 +1711,11 @@ def main(argv):
 
   if OPTIONS.device_specific is not None:
     OPTIONS.device_specific = os.path.abspath(OPTIONS.device_specific)
+
+  # SPRD: add for secure boot
+  OPTIONS.secure_boot = OPTIONS.info_dict.get("secure_boot", False)
+  OPTIONS.secure_boot_tool = OPTIONS.info_dict.get("secure_boot_tool", None)
+  OPTIONS.single_key = OPTIONS.info_dict.get("single_key", True)
 
   while True:
 

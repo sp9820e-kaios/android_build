@@ -103,7 +103,7 @@ ifeq "" "$(PLATFORM_SECURITY_PATCH)"
   # Can be an arbitrary string, but must be a single word.
   #
   # If there is no $PLATFORM_SECURITY_PATCH set, keep it empty.
-  PLATFORM_SECURITY_PATCH := 2015-10-01
+  PLATFORM_SECURITY_PATCH := 2016-07-01
 endif
 
 ifeq "" "$(PLATFORM_BASE_OS)"
@@ -133,5 +133,9 @@ ifeq "" "$(BUILD_NUMBER)"
   # If no BUILD_NUMBER is set, create a useful "I am an engineering build
   # from this date/time" value.  Make it start with a non-digit so that
   # anyone trying to parse it as an integer will probably get "0".
+
+  ## No no, it is too long for us, we need to cut.
+  ## TODO To find a better way to cut the fingerprint
   BUILD_NUMBER := eng.$(USER).$(shell date +%Y%m%d.%H%M%S)
+  BUILD_NUMBER := $(shell date +%Y%m%d)
 endif

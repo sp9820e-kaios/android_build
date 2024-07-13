@@ -34,6 +34,12 @@ import rangelib
 
 from hashlib import sha1 as sha1
 
+# SPRD: add for secure boot
+import sprd_secure_boot_sign as sprd_sign
+
+global sha1_patch
+global sha1_sh
+
 
 class Options(object):
   def __init__(self):
@@ -60,7 +66,19 @@ class Options(object):
     self.extras = {}
     self.info_dict = None
     self.worker_threads = None
-
+    # SPRD: add for update from 4.4\5.1 to 6.0
+    self.update_higher = False
+    self.part_name_change = False
+    self.enable_internal_storage = False
+    # SPRD: add for secure boot
+    self.sprd_sign = None
+    # SPRD: add for default upgrade modem and bootloader
+    self.modem_update = True
+    self.uboot_update = True
+    self.secure_boot = False
+     #TCT FEATURE
+    self.package_key_pwd = None
+    self.cu = None
 
 OPTIONS = Options()
 
@@ -122,6 +140,9 @@ def LoadInfoDict(input_file):
   # backwards compatibility: These values used to be in their own
   # files.  Look for them, in case we're processing an old
   # target_files zip.
+  if "enable_internal_storage" in d:
+      OPTIONS.enable_internal_storage = d["enable_internal_storage"]
+  print "OPTIONS.enable_internal_storage = %s" % OPTIONS.enable_internal_storage
 
   if "mkyaffs2_extra_flags" not in d:
     try:
@@ -173,8 +194,13 @@ def LoadInfoDict(input_file):
   makeint("vendor_size")
   makeint("userdata_size")
   makeint("cache_size")
+  makeint("usbmsc_size")
+  makeint("pro_size")
   makeint("recovery_size")
   makeint("boot_size")
+  # SPRD: add for sysinfo detection @ {
+  makeint("sysinfo_size")
+  # @ }
   makeint("fstab_version")
 
   d["fstab"] = LoadRecoveryFSTab(read_helper, d["fstab_version"])
@@ -202,14 +228,16 @@ def LoadDictionaryFromLines(lines):
 
 def LoadRecoveryFSTab(read_helper, fstab_version):
   class Partition(object):
-    def __init__(self, mount_point, fs_type, device, length, device2, context):
+    def __init__(self, mount_point, fs_type, device, length, device2, context, secure_boot, pre_part):
       self.mount_point = mount_point
       self.fs_type = fs_type
       self.device = device
       self.length = length
       self.device2 = device2
       self.context = context
-
+      # SPRD: add for secure boot
+      self.secureboot = secure_boot
+      self.pre_part = pre_part
   try:
     data = read_helper("RECOVERY/RAMDISK/etc/recovery.fstab")
   except KeyError:
@@ -269,10 +297,27 @@ def LoadRecoveryFSTab(read_helper, fstab_version):
 
       # It's a good line, parse it
       length = 0
+      # SPRD: add for update from 4.4\5.1 to 6.0 @{
+      device = pieces[0]
+      secure_boot = None
+      pre_part = None
+      if OPTIONS.part_name_change is True:
+        device = device.replace("sdio_emmc","sprd-sdhci.3");
+        print "device = %s" % (device)
+      # @}
+
       options = options.split(",")
       for i in options:
         if i.startswith("length="):
           length = int(i[7:])
+        # SPRD: add for secure boot @{
+        elif i.startswith("secureboot="):
+          sec_option = i[11:]
+          sec_options = sec_option.split(":")
+          secure_boot = sec_options[0]
+          if len(sec_options) > 1:
+            pre_part = sec_options[1]
+        # @}
         else:
           # Ignore all unknown options in the unified fstab
           continue
@@ -285,15 +330,50 @@ def LoadRecoveryFSTab(read_helper, fstab_version):
           context = i
 
       mount_point = pieces[1]
+      if OPTIONS.update_higher and OPTIONS.enable_internal_storage:
+        mount_point = mount_point.replace("/storage/sdcard0","/internalsd")
+        print "mount_point = %s" % (mount_point)
       d[mount_point] = Partition(mount_point=mount_point, fs_type=pieces[2],
-                                 device=pieces[0], length=length,
-                                 device2=None, context=context)
+                                 device=device, length=length,
+                                 device2=None, context=context,
+                                 secure_boot=secure_boot, pre_part=pre_part)
 
   else:
     raise ValueError("Unknown fstab_version: \"%d\"" % (fstab_version,))
 
   return d
 
+# SPRD: add for secure boot @{
+def GetSprdSign():
+  if OPTIONS.sprd_sign is None:
+    OPTIONS.sprd_sign = sprd_sign.SprdSign(OPTIONS, OPTIONS.single_key)
+
+  return OPTIONS.sprd_sign
+
+def DoSprdSign(sign_type, img_name, img_data, mount_point):
+  if OPTIONS.secure_boot:
+    temp_dir = tempfile.mkdtemp(prefix="sprd-sign-")
+    OPTIONS.tempfiles.append(temp_dir)
+
+    img_path = os.path.join(temp_dir, img_name)
+    source_img = open(img_path, "w+b")
+    source_img.write(img_data)
+    source_img.flush()
+    source_img.close()
+
+    secure_img = tempfile.NamedTemporaryFile()
+
+    GetSprdSign().DoSign(sign_type, source_img.name, secure_img.name, mount_point)
+
+    secure_img.seek(os.SEEK_SET, 0)
+    data = secure_img.read()
+
+    secure_img.close()
+
+    return data
+  else:
+    return img_data
+# @}
 
 def DumpInfoDict(d):
   for k, v in sorted(d.items()):
@@ -355,9 +435,15 @@ def BuildBootableImage(sourcedir, fs_config_file, info_dict=None):
     cmd.append(open(fn).read().rstrip("\n"))
 
   args = info_dict.get("mkbootimg_args", None)
+
   if args and args.strip():
     cmd.extend(shlex.split(args))
 
+  # SPRD: add for dt @{
+  dt_img = info_dict.get("with_dt_img", None)
+  if (dt_img):
+    cmd.extend(["--dt", os.path.join(os.path.dirname(sourcedir), dt_img)])
+  # @}
   img_unsigned = None
   if info_dict.get("vboot", None):
     img_unsigned = tempfile.NamedTemporaryFile()
@@ -416,25 +502,43 @@ def GetBootableImage(name, prebuilt_name, unpack_dir, tree_subdir,
   'prebuilt_name', otherwise look for it under 'unpack_dir'/IMAGES,
   otherwise construct it from the source files in
   'unpack_dir'/'tree_subdir'."""
-
+  img_file = None
   prebuilt_path = os.path.join(unpack_dir, "BOOTABLE_IMAGES", prebuilt_name)
   if os.path.exists(prebuilt_path):
     print "using prebuilt %s from BOOTABLE_IMAGES..." % (prebuilt_name,)
-    return File.FromLocalFile(name, prebuilt_path)
+    # SPRD: modify for secure boot
+    #return File.FromLocalFile(name, prebuilt_path)
+    img_file = File.FromLocalFile(name, prebuilt_path)
 
   prebuilt_path = os.path.join(unpack_dir, "IMAGES", prebuilt_name)
   if os.path.exists(prebuilt_path):
     print "using prebuilt %s from IMAGES..." % (prebuilt_name,)
+    # SPRD: modify for secure boot
     return File.FromLocalFile(name, prebuilt_path)
+    #img_file = File.FromLocalFile(name, prebuilt_path)
 
   print "building image from target_files %s..." % (tree_subdir,)
   fs_config = "META/" + tree_subdir.lower() + "_filesystem_config.txt"
-  data = BuildBootableImage(os.path.join(unpack_dir, tree_subdir),
+  # SPRD: modify for secure boot
+  #data = BuildBootableImage(os.path.join(unpack_dir, tree_subdir),
+  # added for not build BootableImage
+
+  if img_file is None:
+     print "Debug : img is none !"
+     img_file = File(name, BuildBootableImage(os.path.join(unpack_dir, tree_subdir),
                             os.path.join(unpack_dir, fs_config),
-                            info_dict)
-  if data:
-    return File(name, data)
-  return None
+                            info_dict))
+
+  # SPRD: modify for secure boot @{
+  #if data:
+  #  return File(name, data)
+  #return None
+  if OPTIONS.secure_boot == "true":
+    data = DoSprdSign("vlr", prebuilt_name, img_file.data, "other")
+  else :
+    return img_file
+  return File(name, data)
+  # @}
 
 
 def UnzipTemp(filename, pattern=None):
@@ -581,6 +685,10 @@ def CheckSize(data, target, info_dict):
   if info_dict["fstab"]:
     if mount_point == "/userdata":
       mount_point = "/data"
+    if mount_point == "/prodnv":
+      mount_point = "/productinfo"
+    if mount_point == "/sysinfo":
+      mount_point = "/systeminfo"
     p = info_dict["fstab"][mount_point]
     fs_type = p.fs_type
     device = p.device
@@ -597,7 +705,7 @@ def CheckSize(data, target, info_dict):
   size = len(data)
   pct = float(size) * 100.0 / limit
   msg = "%s size (%d) is %.2f%% of limit (%d)" % (target, size, pct, limit)
-  if pct >= 99.0:
+  if pct > 100.0:
     raise ExternalError(msg)
   elif pct >= 95.0:
     print
@@ -669,12 +777,12 @@ def ParseOptions(argv,
 
   try:
     opts, args = getopt.getopt(
-        argv, "hvp:s:x:" + extra_opts,
+        argv, "hvp:s:x:r:c:" + extra_opts,
         ["help", "verbose", "path=", "signapk_path=", "extra_signapk_args=",
          "java_path=", "java_args=", "public_key_suffix=",
          "private_key_suffix=", "boot_signer_path=", "boot_signer_args=",
          "verity_signer_path=", "verity_signer_args=", "device_specific=",
-         "extra="] +
+         "extra=", "package_key_pwd=", "cu="] +
         list(extra_long_opts))
   except getopt.GetoptError as err:
     Usage(docstring)
@@ -713,7 +821,11 @@ def ParseOptions(argv,
       OPTIONS.device_specific = a
     elif o in ("-x", "--extra"):
       key, value = a.split("=", 1)
-      OPTIONS.extras[key] = value
+      OPTIONS.extras[key] = value 
+    elif o in ("-r", "--package_key_pwd"): # TCT FEATURE
+      OPTIONS.package_key_pwd = a
+    elif o in ("-c", "--cu"):
+      OPTIONS.cu = a
     else:
       if extra_option_handler is None or not extra_option_handler(o, a):
         assert False, "unknown option \"%s\"" % (o,)
@@ -1090,7 +1202,9 @@ class Difference(object):
           err.append(e)
       th = threading.Thread(target=run)
       th.start()
-      th.join(timeout=300)   # 5 mins
+      #TCT FEATURE
+      #th.join(timeout=300)   # 5 mins
+      th.join(timeout=1200)   # 20 mins
       if th.is_alive():
         print "WARNING: diff command timed out"
         p.terminate()
@@ -1331,9 +1445,16 @@ DataImage = blockimgdiff.DataImage
 PARTITION_TYPES = {
     "yaffs2": "MTD",
     "mtd": "MTD",
+# SPRD: add for ubi @{
+    "ubifs": "UBI",
+    "ubi": "UBI",
+# @}
     "ext4": "EMMC",
     "emmc": "EMMC",
     "f2fs": "EMMC",
+# SPRD: modify for backup and resume @{
+    "vfat": "EMMC",
+# @}
     "squashfs": "EMMC"
 }
 
@@ -1344,6 +1465,31 @@ def GetTypeAndDevice(mount_point, info):
             fstab[mount_point].device)
   else:
     raise KeyError
+
+# SPRD: add for secure boot @{
+SECURE_BOOT_TYPE = { "vlr": "SEC_VLR",
+                     "bsc": "SEC_BSC" }
+def GetSecureBootType(mount_point, info):
+  fstab = info["fstab"]
+  if fstab and fstab[mount_point].secureboot:
+    return SECURE_BOOT_TYPE[fstab[mount_point].secureboot]
+  else:
+    return None
+# @}
+
+# SPRD: add for secure boot @{
+def GetPreviousSecureBootInfo(mount_point, info):
+  fstab = info["fstab"]
+  if fstab and fstab[mount_point].secureboot and fstab[mount_point].pre_part:
+    pre_part = fstab[mount_point].pre_part;
+    pre_fstype = fstab[pre_part].fs_type
+    pre_dev = fstab[pre_part].device
+    pre_sec = fstab[pre_part].secureboot
+    print "pre_fstype = %s, pre_dev = %s, pre_sec = %s" % (pre_fstype, pre_dev, pre_sec)
+    return pre_fstype, pre_dev, pre_sec
+  else:
+    return None, None, None
+# @}
 
 
 def ParseCertificate(data):
@@ -1373,7 +1519,8 @@ def MakeRecoveryPatch(input_dir, output_sink, recovery_img, boot_img,
   corresponding images.  info should be the dictionary returned by
   common.LoadInfoDict() on the input target_files.
   """
-
+  global sha1_patch
+  global sha1_sh
   if info_dict is None:
     info_dict = OPTIONS.info_dict
 
@@ -1395,6 +1542,31 @@ def MakeRecoveryPatch(input_dir, output_sink, recovery_img, boot_img,
     recovery_type, recovery_device = GetTypeAndDevice("/recovery", info_dict)
   except KeyError:
     return
+  # SPRD: add for secure boot @{
+  if (OPTIONS.secure_boot):
+    secure_boot_type = GetSecureBootType("/boot", OPTIONS.info_dict)
+    if (secure_boot_type):
+      boot_type = "%s:%s" % (secure_boot_type, boot_type)
+    secure_boot_type = GetSecureBootType("/recovery", OPTIONS.info_dict)
+    if (secure_boot_type):
+      pre_fstype, pre_dev, pre_sec = GetPreviousSecureBootInfo("/recovery", OPTIONS.info_dict)
+      print "pre_fstype = %s, pre_dev = %s, pre_sec = %s" % (pre_fstype, pre_dev, pre_sec)
+      bonus_args = "-r %s %s %s %s" % (pre_fstype, pre_dev, pre_sec, bonus_args)
+      recovery_type = "%s:%s" % (secure_boot_type, recovery_type)
+  # @}
+  # SPRD: add for update from 4.4\5.1 to 6.0 @{
+  if OPTIONS.part_name_change is True:
+    boot_device = boot_device.replace("sprd-sdhci.3","sdio_emmc");
+    recovery_device = recovery_device.replace("sprd-sdhci.3","sdio_emmc");
+  # @}
+
+  if boot_type == "EMMC":
+    strinfo = re.compile('soc:ap')
+    boot_device = strinfo.sub('soc.ap',boot_device)
+
+  if recovery_type == "EMMC":
+    strinfo = re.compile('soc:ap')
+    recovery_device = strinfo.sub('soc.ap',recovery_device)
 
   sh = """#!/system/bin/sh
 if ! applypatch -c %(recovery_type)s:%(recovery_device)s:%(recovery_size)d:%(recovery_sha1)s; then
@@ -1428,3 +1600,7 @@ fi
     print "failed to read init.rc: %s" % (e,)
 
   output_sink(sh_location, sh)
+  sha1_patch = sha1(patch).hexdigest() + " /system/recovery-from-boot.p\n"
+  sha1_sh = sha1(sh).hexdigest() + " /system/bin/install-recovery.sh\n"
+ 
+  return (sha1_sh , sha1_patch)

@@ -66,6 +66,7 @@ PRODUCT_PACKAGES += \
     libsqlite_jni \
     libwilhelm \
     logd \
+    mkfs_ubifs \
     make_ext4fs \
     e2fsck \
     resize2fs \

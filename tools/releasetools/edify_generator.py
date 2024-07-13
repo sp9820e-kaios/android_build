@@ -194,6 +194,11 @@ class EdifyGenerator(object):
     destination directory."""
     self.script.append('package_extract_dir("%s", "%s");' % (src, dst))
 
+  def UnpackPackageFile(self, src, dst):
+    """Unpack a given file from the OTA package into the given
+    destination directory."""
+    self.script.append('package_extract_file("%s", "%s");' % (src, dst))
+
   def Comment(self, comment):
     """Write a comment into the update script."""
     self.script.append("")
@@ -293,6 +298,10 @@ class EdifyGenerator(object):
         self.script.append(
             'write_raw_image(package_extract_file("%(fn)s"), "%(device)s");'
             % args)
+      elif partition_type == "UBI":
+        self.script.append(
+            'write_raw_image(package_extract_file("%(fn)s"), "%(device)s", "UBI");'
+            % args)
       elif partition_type == "EMMC":
         if mapfn:
           args["map"] = mapfn
@@ -300,7 +309,8 @@ class EdifyGenerator(object):
               'package_extract_file("%(fn)s", "%(device)s", "%(map)s");' % args)
         else:
           self.script.append(
-              'package_extract_file("%(fn)s", "%(device)s");' % args)
+              'write_raw_image(package_extract_file("%(fn)s"), "%(device)s", "EMMC");'
+              % args)
       else:
         raise ValueError(
             "don't know how to write \"%s\" partitions" % p.fs_type)
@@ -359,7 +369,10 @@ class EdifyGenerator(object):
     for p in sorted(self.mounts):
       self.script.append('unmount("%s");' % (p,))
     self.mounts = set()
-
+   #TCT FEATURE
+  def CheckCu(self, cu):
+     """check the cu of this package against the cu of the handset"""
+     self.script.append('check_cu("%s");' % (cu,))
   def AddToZip(self, input_zip, output_zip, input_path=None):
     """Write the accumulated script to the output_zip file.  input_zip
     is used as the source for the 'updater' binary needed to run

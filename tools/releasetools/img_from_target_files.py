@@ -131,6 +131,8 @@ def main(argv):
         add_img_to_target_files.AddUserdata(output_zip, prefix="")
         banner("AddCache")
         add_img_to_target_files.AddCache(output_zip, prefix="")
+        banner("AddUsbmsc")
+        add_img_to_target_files.AddUsbmsc(output_zip, prefix="")
 
   finally:
     print "cleaning up..."

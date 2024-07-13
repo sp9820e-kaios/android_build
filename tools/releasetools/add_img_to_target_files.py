@@ -41,6 +41,24 @@ OPTIONS = common.OPTIONS
 OPTIONS.add_missing = False
 OPTIONS.rebuild_recovery = False
 
+def CopyItems(out_path, output_zip, item_name):
+  item_path = os.path.join(out_path, item_name)
+  if os.path.exists(item_path):
+    print "%s is exists"%(item_name)
+    with open(item_path, "rb") as f:
+      common.ZipWriteStr(output_zip, os.path.join("IMAGES", item_name), f.read())
+
+def CopySystem(output_zip, filename):
+  out_path = OPTIONS.info_dict["system_tmp_dir"]
+  try:
+    CopyItems(out_path, output_zip, "system.img")
+    CopyItems(out_path, output_zip, "system.map")
+    return True
+  except IOError, e:
+    print"Copy System Failed!"
+    return False
+  return False
+
 def AddSystem(output_zip, prefix="IMAGES/", recovery_img=None, boot_img=None):
   """Turn the contents of SYSTEM into a system image and store it in
   output_zip."""
@@ -227,9 +245,45 @@ def AddCache(output_zip, prefix="IMAGES/"):
   os.rmdir(user_dir)
   os.rmdir(temp_dir)
 
+def AddUsbmsc(output_zip, prefix="IMAGES/"):
+  """Create an empty usbmsc image and store it in output_zip."""
+
+  prebuilt_path = os.path.join(OPTIONS.input_tmp, prefix, "usbmsc.img")
+  if os.path.exists(prebuilt_path):
+    print "usbmsc.img already exists in %s, no need to rebuild..." % (prefix,)
+    return
+
+  image_props = build_image.ImagePropFromGlobalDict(OPTIONS.info_dict,
+                                                    "usbmsc")
+  # The build system has to explicitly request for usbmsc.img.
+  if "fs_type" not in image_props:
+    return
+
+  print "creating usbmsc.img..."
+
+  # The name of the directory it is making an image out of matters to
+  # mkyaffs2image.  So we create a temp dir, and within it we create an
+  # empty dir named "usbmsc", and build the image from that.
+  temp_dir = tempfile.mkdtemp()
+  user_dir = os.path.join(temp_dir, "usbmsc")
+  os.mkdir(user_dir)
+  img = tempfile.NamedTemporaryFile()
+
+  fstab = OPTIONS.info_dict["fstab"]
+  if fstab:
+    image_props["fs_type"] = fstab["/usbmsc"].fs_type
+  succ = build_image.BuildImage(user_dir, image_props, img.name)
+  assert succ, "build usbmsc.img image failed"
+
+  common.CheckSize(img.name, "usbmsc.img", OPTIONS.info_dict)
+  common.ZipWrite(output_zip, img.name, prefix + "usbmsc.img")
+  img.close()
+  os.rmdir(user_dir)
+  os.rmdir(temp_dir)
 
 def AddImagesToTargetFiles(filename):
   OPTIONS.input_tmp, input_zip = common.UnzipTemp(filename)
+  OPTIONS.out_path = filename[0:filename.find("obj")]
 
   if not OPTIONS.add_missing:
     for n in input_zip.namelist():
@@ -244,6 +298,12 @@ def AddImagesToTargetFiles(filename):
     has_vendor = False
 
   OPTIONS.info_dict = common.LoadInfoDict(input_zip)
+
+  # SPRD: add for secure boot
+  OPTIONS.secure_boot = OPTIONS.info_dict.get("secure_boot", False)
+  OPTIONS.secure_boot_tool = OPTIONS.info_dict.get("secure_boot_tool", None)
+  OPTIONS.single_key = OPTIONS.info_dict.get("single_key", True)
+
   if "selinux_fc" in OPTIONS.info_dict:
     OPTIONS.info_dict["selinux_fc"] = os.path.join(
         OPTIONS.input_tmp, "BOOT", "RAMDISK", "file_contexts")
@@ -284,7 +344,8 @@ def AddImagesToTargetFiles(filename):
       recovery_image.AddToZip(output_zip)
 
   banner("system")
-  AddSystem(output_zip, recovery_img=recovery_image, boot_img=boot_image)
+  if not CopySystem(output_zip, filename):
+    AddSystem(output_zip, recovery_img=recovery_image, boot_img=boot_image)
   if has_vendor:
     banner("vendor")
     AddVendor(output_zip)
@@ -292,7 +353,8 @@ def AddImagesToTargetFiles(filename):
   AddUserdata(output_zip)
   banner("cache")
   AddCache(output_zip)
-
+  banner("usbmsc")
+  AddUsbmsc(output_zip)
   common.ZipClose(output_zip)
 
 def main(argv):
